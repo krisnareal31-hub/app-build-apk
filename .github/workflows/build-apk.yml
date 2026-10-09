@@ -84,9 +84,9 @@ jobs:
           sed -i "s/com\.webview\.app/$PKG/g" "app/src/main/java/$PKG_PATH/MainActivity.java"
           python3 - << PY2
           from pathlib import Path
+          import re
           p = Path("app/src/main/java/$PKG_PATH/MainActivity.java")
           t = p.read_text()
-          import re
           t = re.sub(r'private static final String START_URL = ".*?";', 'private static final String START_URL = "$URL";', t)
           p.write_text(t)
           PY2
@@ -111,12 +111,40 @@ jobs:
           cd build_src
           ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Package APK
+      - name: Sign APK
         run: |
           set -e
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          if [ ! -d "$BT" ]; then
+            BT=$(ls -d "$ANDROID_HOME/build-tools/"* | tail -1)
+          fi
+          echo "build-tools=$BT"
+
           UNSIGNED=$(find build_src/app/build/outputs/apk -name "*.apk" | head -1)
-          echo "Found: $UNSIGNED"
-          cp "$UNSIGNED" app-release.apk
+          echo "unsigned=$UNSIGNED"
+          ls -lh "$UNSIGNED"
+
+          # generate keystore
+          keytool -genkeypair -v -keystore /tmp/release.jks -storetype JKS \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias webapp -storepass android123 -keypass android123 \
+            -dname "CN=WebApp, OU=Dev, O=Rizx, L=ID, ST=ID, C=ID"
+
+          # zipalign
+          "$BT/zipalign" -f -p 4 "$UNSIGNED" /tmp/app-aligned.apk
+
+          # sign (APK Signature Scheme v2/v3)
+          "$BT/apksigner" sign \
+            --ks /tmp/release.jks \
+            --ks-pass pass:android123 \
+            --key-pass pass:android123 \
+            --ks-key-alias webapp \
+            --out app-release.apk \
+            /tmp/app-aligned.apk
+
+          # verify
+          "$BT/apksigner" verify --verbose app-release.apk
           ls -lh app-release.apk
 
       - name: Upload artifact
