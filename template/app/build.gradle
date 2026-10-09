@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace '__PACKAGE_NAME__'
+    namespace 'com.webview.app'
     compileSdk 34
 
     defaultConfig {
-        applicationId "__PACKAGE_NAME__"
+        applicationId "com.webview.app"
         minSdk 24
         targetSdk 34
         versionCode 1
@@ -17,10 +17,9 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -28,6 +27,6 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
 }
