@@ -34,32 +34,32 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android SDK (manual)
+      - name: Setup Android SDK
         run: |
           set -e
-          export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          if [ -z "$ANDROID_HOME" ]; then
-            export ANDROID_HOME=/usr/local/lib/android/sdk
-          fi
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
 
-          # accept licenses non-interactively
           mkdir -p "$ANDROID_HOME/licenses"
-          echo -e "24333f8a63b6825ea9c5514f83c2829b004d1fee\n" > "$ANDROID_HOME/licenses/android-sdk-license"
-          echo -e "84831b9409647d489ab76bceae1ed541060dd321\n" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-          echo -e "d56f5187479451eabf01fb78a37df56f94e904a5\n" > "$ANDROID_HOME/licenses/android-sdk-license"
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          printf '%s\n' "24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf '%s\n' "84831b9409647d489ab76bceae1ed541060dd321" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          printf '%s\n' "d56f5187479451eabf01fb78a37df56f94e904a5" >> "$ANDROID_HOME/licenses/android-sdk-license"
 
-          # install required packages
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" || \
-            $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" || \
-            $ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
-
-          # path to build-tools
-          echo "PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/build-tools/34.0.0" >> $GITHUB_ENV
-          ls "$ANDROID_HOME/build-tools/" || true
+          SDKM=""
+          for c in \
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager" \
+            "$(command -v sdkmanager || true)"; do
+            if [ -x "$c" ]; then SDKM="$c"; break; fi
+          done
+          echo "sdkmanager=$SDKM"
+          yes | "$SDKM" --licenses >/tmp/lic.txt 2>&1 || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+          echo "$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          ls "$ANDROID_HOME/build-tools/"
 
       - name: Prepare project
         run: |
@@ -72,7 +72,7 @@ jobs:
           URL='${{ github.event.inputs.url }}'
 
           PKG=$(echo "$PKG" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.]//g')
-          if [ -z "$PKG" ]; then PKG=com.rizx.webapp; fi
+          [ -z "$PKG" ] && PKG=com.rizx.webapp
 
           PKG_PATH=$(echo "$PKG" | tr '.' '/')
           mkdir -p "app/src/main/java/$PKG_PATH"
@@ -81,36 +81,29 @@ jobs:
             rm -rf app/src/main/java/com/webview
           fi
 
-          sed -i "s/com.webview.app/$PKG/g" "app/src/main/java/$PKG_PATH/MainActivity.java"
-          # replace START_URL
-          sed -i "s|private static final String START_URL = \".*\";|private static final String START_URL = \"$URL\";|g" "app/src/main/java/$PKG_PATH/MainActivity.java"
+          sed -i "s/com\.webview\.app/$PKG/g" "app/src/main/java/$PKG_PATH/MainActivity.java"
+          python3 - << PY2
+          from pathlib import Path
+          p = Path("app/src/main/java/$PKG_PATH/MainActivity.java")
+          t = p.read_text()
+          import re
+          t = re.sub(r'private static final String START_URL = ".*?";', 'private static final String START_URL = "$URL";', t)
+          p.write_text(t)
+          PY2
 
           sed -i "s/namespace 'com.webview.app'/namespace '$PKG'/" app/build.gradle
           sed -i "s/applicationId \"com.webview.app\"/applicationId \"$PKG\"/" app/build.gradle
           sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|" app/src/main/res/values/strings.xml
-
-          echo "Building APP=$APP_NAME PKG=$PKG URL=$URL"
-          cat "app/src/main/java/$PKG_PATH/MainActivity.java" | head -20
+          echo "APP=$APP_NAME PKG=$PKG URL=$URL"
 
       - name: Setup Gradle Wrapper
         run: |
           set -e
           cd build_src
-          # write wrapper properties + use gradle from apt or download
-          mkdir -p gradle/wrapper
-          cat > gradle/wrapper/gradle-wrapper.properties << 'PROP'
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-8.2.1-bin.zip
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          PROP
-          # install gradle to generate wrapper jar if needed
           curl -sL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.2.1-bin.zip
           unzip -q -o /tmp/gradle.zip -d /tmp
           /tmp/gradle-8.2.1/bin/gradle wrapper --gradle-version 8.2.1
           chmod +x gradlew
-          ls -la
 
       - name: Build Release APK
         run: |
@@ -122,7 +115,7 @@ jobs:
         run: |
           set -e
           UNSIGNED=$(find build_src/app/build/outputs/apk -name "*.apk" | head -1)
-          echo "Found APK: $UNSIGNED"
+          echo "Found: $UNSIGNED"
           cp "$UNSIGNED" app-release.apk
           ls -lh app-release.apk
 
