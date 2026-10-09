@@ -1,36 +1,29 @@
-name: Build APK
+name: Build WebView APK
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: "Website URL"
+        description: 'Website URL'
         required: true
         type: string
       app_name:
-        description: "App name"
+        description: 'App name'
         required: true
-        default: "MyApp"
         type: string
+        default: 'MyApp'
       package_name:
-        description: "Package name (e.g. com.rizx.app)"
+        description: 'Package name (e.g. com.rizx.myapp)'
         required: true
-        default: "com.rizx.webapp"
         type: string
-      icon_url:
-        description: "Icon URL (PNG, optional)"
-        required: false
-        default: ""
-        type: string
-
-permissions:
-  contents: write
-  actions: read
+        default: 'com.rizx.webapp'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,54 +32,93 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: 17
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
-
       - name: Prepare project
-        env:
-          APP_URL: ${{ inputs.url }}
-          APP_NAME: ${{ inputs.app_name }}
-          PKG_NAME: ${{ inputs.package_name }}
-          ICON_URL: ${{ inputs.icon_url }}
-        run: bash scripts/prepare.sh
+        run: |
+          set -e
+          cp -r template build_src
+          cd build_src
+
+          APP_NAME='${{ github.event.inputs.app_name }}'
+          PKG='${{ github.event.inputs.package_name }}'
+          URL='${{ github.event.inputs.url }}'
+
+          # sanitize package
+          PKG=$(echo "$PKG" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.]//g')
+          if [ -z "$PKG" ]; then PKG=com.rizx.webapp; fi
+
+          # package path
+          PKG_PATH=$(echo "$PKG" | tr '.' '/')
+          mkdir -p "app/src/main/java/$PKG_PATH"
+          mv app/src/main/java/com/webview/app/MainActivity.java "app/src/main/java/$PKG_PATH/MainActivity.java"
+          rm -rf app/src/main/java/com/webview
+
+          # replace package + url + app name
+          sed -i "s/com.webview.app/$PKG/g" "app/src/main/java/$PKG_PATH/MainActivity.java"
+          sed -i "s|private static final String START_URL = \".*\";|private static final String START_URL = \"$URL\";|g" "app/src/main/java/$PKG_PATH/MainActivity.java"
+
+          sed -i "s/namespace 'com.webview.app'/namespace '$PKG'/" app/build.gradle
+          sed -i "s/applicationId \"com.webview.app\"/applicationId \"$PKG\"/" app/build.gradle
+
+          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|" app/src/main/res/values/strings.xml
+
+          echo "Building $APP_NAME ($PKG) -> $URL"
+
+      - name: Grant gradlew
+        run: |
+          cd build_src
+          gradle wrapper --gradle-version 8.2.1 || true
+          if [ ! -f gradlew ]; then
+            curl -sL -o gradle.zip https://services.gradle.org/distributions/gradle-8.2.1-bin.zip
+            unzip -q gradle.zip
+            ./gradle-8.2.1/bin/gradle wrapper --gradle-version 8.2.1
+          fi
+          chmod +x gradlew
 
       - name: Build Release APK
-        working-directory: build_app
         run: |
-          gradle assembleRelease --no-daemon
-          find . -name "*.apk" -print
+          cd build_src
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Package APK
+      - name: Sign APK (debug key for installability)
         run: |
-          APK=$(find build_app -name "*release*.apk" | head -n 1)
-          if [ -z "$APK" ]; then APK=$(find build_app -name "*.apk" | head -n 1); fi
-          echo "Using $APK"
-          cp "$APK" app-release.apk
+          set -e
+          cd build_src
+          UNSIGNED=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          echo "Found: $UNSIGNED"
+          # use debug keystore so users can install
+          $ANDROID_HOME/build-tools/34.0.0/zipalign -v -p 4 "$UNSIGNED" app-aligned.apk || cp "$UNSIGNED" app-aligned.apk
+          # generate keystore
+          keytool -genkeypair -v -keystore release.jks -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias webapp -storepass android -keypass android \
+            -dname "CN=WebApp, OU=Dev, O=Rizx, L=ID, ST=ID, C=ID"
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign --ks release.jks --ks-pass pass:android \
+            --key-pass pass:android --out app-release.apk app-aligned.apk
           ls -lh app-release.apk
+          cp app-release.apk ../app-release.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ github.run_id }}
           path: app-release.apk
-          retention-days: 5
+          retention-days: 7
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_id }}
-          name: "${{ inputs.app_name }} (${{ github.run_id }})"
+          name: "${{ github.event.inputs.app_name }} (${{ github.run_id }})"
           body: |
-            **App:** ${{ inputs.app_name }}
-            **URL:** ${{ inputs.url }}
-            **Package:** ${{ inputs.package_name }}
+            App: ${{ github.event.inputs.app_name }}
+            URL: ${{ github.event.inputs.url }}
+            Package: ${{ github.event.inputs.package_name }}
           files: app-release.apk
+          draft: false
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
